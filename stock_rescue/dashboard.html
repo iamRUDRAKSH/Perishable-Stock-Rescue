@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perishable Stock Rescue</title>
+<style>
+body{font:16px system-ui;background:#f3f7f4;color:#19352b;max-width:1000px;margin:40px auto;padding:0 20px}
+h1{margin-bottom:8px}p{line-height:1.6}section{background:white;padding:24px;border-radius:12px;margin:20px 0}
+table{width:100%;border-collapse:collapse;text-align:left}td,th{padding:12px 8px;border-bottom:1px solid #dce6df}
+button{background:#226b48;color:white;border:0;border-radius:6px;padding:10px 16px;cursor:pointer}
+button:disabled{opacity:.5}input,select{padding:9px;margin:5px;border:1px solid #aabeb0;border-radius:5px}
+pre{white-space:pre-wrap}#message{white-space:pre-line}small{color:#57695e}.scroll{overflow-x:auto}
+</style>
+<h1>Perishable Stock Rescue</h1>
+<p>Rescue surplus food by transferring it to nearby stores before expiry.<br>
+<small>Simulated data · Python allocation service → HTTP → Python stock service → SQLite</small></p>
+<section><h2>Supermarket stock</h2><div class="scroll"><table>
+<thead><tr><th>Product</th><th>Listed</th><th>Available</th><th>Expires</th></tr></thead>
+<tbody id="stock"></tbody></table></div></section>
+<section><h2>Request a transfer</h2>
+<form id="request"><label>Store <select id="store"></select></label>
+<label>Product <select id="lot"></select></label>
+<label>Units <input id="quantity" type="number" min="1" max="10000" value="10" required></label>
+<button>Reserve stock</button></form>
+<p><button id="batch">Run overlapping requests: A wants 30, B wants 25 yogurts</button></p>
+<small>Higher demand, shorter travel and sooner expiry increase priority. Ranking applies within each batch.
+Partial reservations are allowed. Collect within 30 minutes, or sooner if expiry requires it.</small>
+<p id="message" role="status"></p></section>
+<section><h2>Reservations</h2><button id="refresh">Refresh</button>
+<div class="scroll"><table><thead><tr><th>Store</th><th>Lot</th><th>Units</th><th>Collect by</th><th>Status</th><th>Action</th></tr></thead>
+<tbody id="reservations"></tbody></table></div></section>
+<script>
+const $ = id => document.getElementById(id);
+const date = seconds => new Date(seconds * 1000).toLocaleString();
+async function api(path, data) {
+  const response = await fetch(path, data === undefined ? {} : {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error);
+  return result;
+}
+function cell(row, text) { const td=document.createElement('td'); td.textContent=text; row.append(td); return td; }
+async function refresh() {
+  const state = await api('/api/state');
+  $('stock').replaceChildren(); $('reservations').replaceChildren();
+  for (const lot of state.lots) {
+    const row=document.createElement('tr');
+    [lot.product,lot.quantity,lot.available,date(lot.expires_at)].forEach(text=>cell(row,text));
+    $('stock').append(row);
+  }
+  if (!$('store').options.length) {
+    for (const [id,store] of Object.entries(state.stores))
+      $('store').add(new Option(`${store.name} (${store.travel_minutes} min, demand ${store.demand})`,id));
+    for (const lot of state.lots) $('lot').add(new Option(lot.product,lot.id));
+  }
+  for (const reservation of state.reservations) {
+    const row=document.createElement('tr');
+    [reservation.store_id,reservation.lot_id,reservation.quantity,date(reservation.deadline),reservation.status]
+      .forEach(text=>cell(row,text));
+    const action=cell(row,'');
+    if (reservation.status === 'reserved') {
+      const button=document.createElement('button'); button.textContent='Collect';
+      button.onclick=()=>act(async()=>{await api('/api/collect/'+reservation.id,{});$('message').textContent='Collected successfully.';});
+      action.append(button);
+    }
+    $('reservations').append(row);
+  }
+}
+async function act(work) {
+  document.querySelectorAll('button').forEach(button=>button.disabled=true);
+  try { await work(); await refresh(); }
+  catch(error) { $('message').textContent=error.message; }
+  finally { document.querySelectorAll('button').forEach(button=>button.disabled=false); }
+}
+async function allocate(requests) {
+  const response=await api('/api/allocate',{requests});
+  $('message').textContent=response.results.map(result=>
+    `${result.store_id}: ${result.allocated}/${result.quantity} units · score ${result.score} · ${result.reason}`
+  ).join('\n');
+}
+$('request').onsubmit=event=>{event.preventDefault();act(()=>allocate([
+  {store_id:$('store').value,lot_id:$('lot').value,quantity:Number($('quantity').value)}
+]));};
+$('batch').onclick=()=>act(()=>allocate([
+  {store_id:'store-a',lot_id:'yogurt-01',quantity:30},
+  {store_id:'store-b',lot_id:'yogurt-01',quantity:25}
+]));
+$('refresh').onclick=()=>act(async()=>{});
+act(async()=>{});
+</script>
+</html>

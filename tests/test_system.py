@@ -75,6 +75,29 @@ class SystemTests(unittest.TestCase):
         result = self.allocate([self.request(quantity=40)])[0]
         self.assertEqual(result['allocated'], 40)
 
+    def test_overlapping_requests_can_use_new_lot_and_custom_quantities(self):
+        self.allocate([self.request(quantity=40)])  # Original yogurt is exhausted.
+        lot = call(self.urls[0] + '/api/stock', 'POST', {
+            'product': 'Milk', 'quantity': 17, 'expires_in_hours': 12})
+        requests = [self.request('store-b', 14, lot['id']),
+                    self.request('store-a', 11, lot['id'])]
+        barrier = threading.Barrier(2)
+
+        def compete(index):
+            barrier.wait(timeout=5)
+            return self.allocate([requests[index]])[0]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(compete, range(2)))
+        self.assertEqual(sum(result['allocated'] for result in results), 17)
+        for result, request in zip(results, requests):
+            self.assertEqual(result['store_id'], request['store_id'])
+            self.assertEqual(result['lot_id'], lot['id'])
+            self.assertEqual(result['quantity'], request['quantity'])
+            self.assertLessEqual(result['allocated'], request['quantity'])
+        self.assertEqual(next(row['available'] for row in self.db.snapshot()['lots']
+                              if row['id'] == lot['id']), 0)
+
     def test_infeasible_travel_and_invalid_batch(self):
         result = self.allocate([self.request('store-c', 10, 'bread-01')])[0]
         self.assertEqual(result['allocated'], 0)
@@ -83,6 +106,36 @@ class SystemTests(unittest.TestCase):
             self.allocate([self.request(), self.request(quantity=-5)])
         self.assertEqual(caught.exception.status, 400)
         self.assertEqual(call(self.stock_url + '/stock')['reservations'], [])
+
+    def test_add_stock_persists_and_can_be_reserved(self):
+        before = call(self.stock_url + '/stock')
+        started = now()
+        lot = call(self.urls[0] + '/api/stock', 'POST', {
+            'product': ' Milk ', 'quantity': 30, 'expires_in_hours': 12})
+        self.assertEqual(lot['product'], 'Milk')
+        self.assertEqual(lot['available'], 30)
+        self.assertGreaterEqual(lot['expires_at'], started + 12 * 3600)
+        state = call(self.urls[1] + '/api/state')
+        self.assertEqual(len(state['lots']), len(before['lots']) + 1)
+        self.assertIn(lot, StockDB(self.db.path).snapshot()['lots'])
+        second = call(self.urls[0] + '/api/stock', 'POST', {
+            'product': 'Milk', 'quantity': 5, 'expires_in_hours': 6})
+        self.assertNotEqual(lot['id'], second['id'])
+        result = self.allocate([self.request(quantity=10, lot=lot['id'])], replica=1)[0]
+        self.assertEqual(result['allocated'], 10)
+
+    def test_invalid_stock_is_rejected_without_inserting(self):
+        for changes in [{'product': ' '}, {'product': 12}, {'product': 'x' * 81},
+                        {'quantity': 0}, {'quantity': True}, {'quantity': 1.5},
+                        {'quantity': 1000001}, {'expires_in_hours': -1},
+                        {'expires_in_hours': 8761}, {'expires_in_hours': None}]:
+            with self.subTest(changes=changes):
+                with self.assertRaises(APIError) as caught:
+                    call(self.urls[0] + '/api/stock', 'POST', {
+                        'product': 'Milk', 'quantity': 30, 'expires_in_hours': 12,
+                        **changes})
+                self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(len(call(self.stock_url + '/stock')['lots']), 2)
 
     def test_direct_stock_requests_cannot_over_allocate(self):
         payload = {**self.request(quantity=41), 'travel_minutes': 20}

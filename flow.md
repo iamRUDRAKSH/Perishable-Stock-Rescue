@@ -24,10 +24,39 @@ adds store information from `simulation.py`. The browser draws stock and
 reservations from this response. Python implements all allocation rules;
 JavaScript only sends actions and updates the page.
 
+### Adding stock: dashboard → coordinator → inventory → database
+
+The **Add stock** form takes a product name, quantity, and expiry in whole hours
+from now. `dashboard.html` sends these as JSON to `POST /api/stock` in
+`coordinator.py`. The coordinator forwards the request over HTTP using
+`common.py:call()` to `POST /stock` in `inventory.py`.
+
+`inventory.py` calls `database.py:add_stock()`. It validates the fields, generates
+a unique lot ID, calculates the expiry timestamp, and inserts the lot inside a
+database transaction. Each addition is a new lot, even for the same product name;
+existing lots and reservations remain intact. The response returns the saved lot.
+The supermarket stock table shows the full Lot ID beside each product, allowing
+you to match separate batches to the lot IDs shown in reservations.
+The dashboard refreshes both the stock table and transfer dropdown, preserving
+the previous transfer selections. Both the single-transfer and overlapping-request
+dropdowns show each lot's full ID, available quantity and expiry to distinguish
+batches of the same product. Errors appear beside the add-stock form.
+
 ## 4. Allocation: dashboard → `coordinator.py` → `simulation.py`
 
-The overlapping-request button submits one `/api/allocate` batch containing
-Store A's request for 30 yogurts and Store B's request for 25.
+The **Run overlapping requests** form lets the user select one lot, two different
+stores, and their requested quantities. `dashboard.html` validates that the stores
+are different and sends two independent `/api/allocate` calls using
+`Promise.allSettled()`. Both calls start before either is awaited. Each contains
+one store's request; both outcomes are displayed even if one request fails.
+After completion the stock and reservation tables refresh. Newly added lots are
+available in this form too, so the demo can continue after yogurt runs out.
+
+Concurrent requests compete in arrival order at inventory. There is no shared
+ranking between them. For example, requests for 30 and 25 units from a lot of 40
+may receive 30/10 or 15/25, depending on which reserves first.
+
+For API clients, `/api/allocate` also supports multiple requests in a single batch.
 `coordinator.py:allocate()` validates the whole batch, reads stock over HTTP,
 and obtains each store's simulated demand and journey duration from
 `simulation.py`. It calculates priority from demand, expiry urgency, and travel
@@ -54,7 +83,9 @@ coordinators read 40 units simultaneously, their inserts cannot both consume
 those same units: the second transaction sees the first committed reservation.
 The coordinator handles HTTP 409 by reading current availability and trying again.
 
-For the initial batch, A reserves 30, then B sees 10 left and reserves 10.
+For an API batch requesting 30 and 25 yogurts from the initial lot, A reserves 30,
+then B sees 10 left and reserves 10. The concurrent dashboard form instead uses
+two single-request batches; arrival order determines which reserves first.
 The allocation response returns quantities, scores, reasons and reservation
 details. The dashboard displays the result and refreshes its tables.
 
@@ -76,8 +107,8 @@ Expired product lots show zero availability even if units remain physically pres
 `COORDINATOR_URLS` lists two allocation replicas, one request goes to each.
 Both replicas talk to the same stock service. The demo prints the allocations
 and checks that total reserved plus collected yogurt never exceeds the lot size.
-Unlike the dashboard batch, these independent requests have no shared ranking
-step; arrival order determines who gets stock first.
+Like the dashboard's overlapping requests form, these independent requests have
+no shared ranking step; arrival order determines who gets stock first.
 
 ## 8. Verification: `tests/test_system.py`
 
@@ -85,7 +116,11 @@ Each test starts a real stock HTTP server and two allocation HTTP servers using
 an isolated temporary SQLite database. The tests cover batch priority, partial
 allocation, concurrent requests across replicas, deadline release, repeat
 collection, infeasible travel, invalid input, persistence, expired lots, and
-direct stock over-allocation rejection. No running local demo is required.
+direct stock over-allocation rejection. They also check that added stock is
+persistent, visible through another coordinator, reservable, and validated before
+insertion. No running local demo is required.
+An additional concurrent scenario exhausts the yogurt lot, adds a new Milk lot,
+and submits custom quantities from two stores to verify the demo is reusable.
 
 ## Supporting files
 

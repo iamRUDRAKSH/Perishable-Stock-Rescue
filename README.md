@@ -14,10 +14,22 @@ From this project folder:
 python3 run.py
 ```
 
-Open **http://localhost:8000**. Click the overlapping-requests button on a fresh
-database: Store A receives 30 yogurts and Store B receives the remaining 10.
+Open **http://localhost:8000**. Under **Run overlapping requests**, choose a stock
+lot, two different stores, and the quantity each store wants. Click **Run both
+requests** to send two independent HTTP requests concurrently. For example, with
+40 units available, quantities of 30 and 25 will allocate a combined 40 units;
+the split depends on arrival order. Choose any existing or newly added lot to
+repeat the demo. The dropdown shows each lot's full ID, availability and expiry.
 Use **Collect** to mark a transfer collected. Click **Refresh** to see current
 stock and reservation status. Ctrl+C stops both services.
+
+To add stock, fill in **Product name**, **Quantity**, and **Expires in (hours)**
+under the stock table, then click **Add stock**. The new stock appears in the
+table and transfer dropdown immediately. Each addition creates a separate lot,
+so you can add the same product with a different expiry. Existing stock and
+reservations are preserved; no database reset is needed. Names must contain
+1–80 characters, quantity must be a whole number from 1–1,000,000, and expiry
+must be a whole number from 1–8,760 hours from the time it is added.
 
 Stock persists in `data/stock.db`. To restart the simulation with fresh stock and
 expiry times, stop the services, delete `data/stock.db`, and start again.
@@ -86,7 +98,11 @@ retailer integrations are outside its scope.
    stock read or write, so no background worker is needed. Collected stock stays
    consumed. An expired product is never offered for allocation.
 
-Ranking is per submitted batch, not a global queue. Different simultaneous
+Ranking is per submitted batch, not a global queue. The dashboard's overlapping
+requests form sends two separate requests concurrently, each containing one
+store, so there is no shared priority ranking between those two requests.
+The API also accepts multiple stores in one batch when priority ranking is desired
+(see the request body below). Different simultaneous
 batches compete in arrival order at the stock service. A batch commits each
 reservation separately, so it is not an all-or-nothing transaction. If a network
 timeout occurs after a reservation is committed, inspect the dashboard before
@@ -121,9 +137,11 @@ The local `run.py` convenience launcher expects the default port configuration.
 | Service | Method and path | Purpose |
 | --- | --- | --- |
 | Allocation | `GET /api/state` | Stock, reservations, simulated stores |
+| Allocation | `POST /api/stock` | Add a stock lot through the stock API |
 | Allocation | `POST /api/allocate` | Rank and allocate a batch |
 | Allocation | `POST /api/collect/{id}` | Collect reservation through stock API |
 | Stock | `GET /stock` | Authoritative stock and reservations |
+| Stock | `POST /stock` | Save a new stock lot |
 | Stock | `POST /reservations` | Atomically reserve stock |
 | Stock | `POST /collect/{id}` | Mark a reservation collected |
 

@@ -73,6 +73,20 @@ class StockDB:
                 "SELECT * FROM reservations ORDER BY rowid DESC")]
             return {"lots": lots, "reservations": reservations}
 
+    def add_stock(self, data):
+        product = data.get("product")
+        if not isinstance(product, str) or not product.strip() or len(product.strip()) > 80:
+            raise APIError(400, "Product name must contain 1 to 80 characters")
+        quantity = positive_int(data.get("quantity"), "quantity")
+        hours = positive_int(data.get("expires_in_hours"), "expires_in_hours")
+        if quantity > 1000000 or hours > 8760:
+            raise APIError(400, "Maximum quantity is 1000000 and maximum expiry is 8760 hours")
+        lot = {"id": uuid.uuid4().hex, "product": product.strip(),
+               "quantity": quantity, "expires_at": now() + hours * 3600}
+        with self.connection() as db:
+            db.execute("INSERT INTO lots VALUES (?, ?, ?, ?)", tuple(lot.values()))
+        return {**lot, "available": quantity}
+
     def reserve(self, data):
         quantity = positive_int(data.get("quantity"), "quantity")
         travel = positive_int(data.get("travel_minutes"), "travel_minutes")

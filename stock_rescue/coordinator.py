@@ -74,6 +74,8 @@ def make_server(host, port, stock_url):
                 return self.send({"service": "allocation", "status": "ok"})
             if self.command == "GET" and self.path == "/api/state":
                 return self.send({**call(stock_url + "/stock"), "stores": STORES})
+            if self.command == "POST" and self.path == "/api/stock":
+                return self.send(call(stock_url + "/stock", "POST", self.read_json()), 201)
             if self.command == "POST" and self.path == "/api/allocate":
                 return self.send(allocate(stock_url, self.read_json().get("requests")))
             if self.command == "POST" and self.path.startswith("/api/collect/"):

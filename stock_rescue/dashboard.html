@@ -9,23 +9,45 @@ h1{margin-bottom:8px}p{line-height:1.6}section{background:white;padding:24px;bor
 table{width:100%;border-collapse:collapse;text-align:left}td,th{padding:12px 8px;border-bottom:1px solid #dce6df}
 button{background:#226b48;color:white;border:0;border-radius:6px;padding:10px 16px;cursor:pointer}
 button:disabled{opacity:.5}input,select{padding:9px;margin:5px;border:1px solid #aabeb0;border-radius:5px}
-pre{white-space:pre-wrap}#message{white-space:pre-line}small{color:#57695e}.scroll{overflow-x:auto}
+select{max-width:100%}
+pre{white-space:pre-wrap}#message,#batch-message{white-space:pre-line}small{color:#57695e}.scroll{overflow-x:auto}
 </style>
 <h1>Perishable Stock Rescue</h1>
 <p>Rescue surplus food by transferring it to nearby stores before expiry.<br>
 <small>Simulated data · Python allocation service → HTTP → Python stock service → SQLite</small></p>
 <section><h2>Supermarket stock</h2><div class="scroll"><table>
-<thead><tr><th>Product</th><th>Listed</th><th>Available</th><th>Expires</th></tr></thead>
-<tbody id="stock"></tbody></table></div></section>
+<thead><tr><th>Product</th><th>Lot ID</th><th>Listed</th><th>Available</th><th>Expires</th></tr></thead>
+<tbody id="stock"></tbody></table></div>
+<h3>Add stock</h3>
+<form id="add-stock">
+<label>Product name <input id="new-product" maxlength="80" placeholder="e.g. Milk" required></label>
+<label>Quantity <input id="new-quantity" type="number" min="1" max="1000000" step="1" value="30" required></label>
+<label>Expires in (hours) <input id="new-expiry" type="number" min="1" max="8760" step="1" value="12" required></label>
+<button>Add stock</button>
+</form>
+<small>Each addition creates a separate stock lot with its own expiry. Existing stock and reservations are kept.</small>
+<p id="stock-message" role="status"></p></section>
 <section><h2>Request a transfer</h2>
 <form id="request"><label>Store <select id="store"></select></label>
 <label>Product <select id="lot"></select></label>
 <label>Units <input id="quantity" type="number" min="1" max="10000" value="10" required></label>
 <button>Reserve stock</button></form>
-<p><button id="batch">Run overlapping requests: A wants 30, B wants 25 yogurts</button></p>
 <small>Higher demand, shorter travel and sooner expiry increase priority. Ranking applies within each batch.
 Partial reservations are allowed. Collect within 30 minutes, or sooner if expiry requires it.</small>
 <p id="message" role="status"></p></section>
+<section><h2>Run overlapping requests</h2>
+<p>Choose one stock lot and two stores competing for it. Both requests are sent at the same time.</p>
+<form id="batch-request">
+<p><label>Stock lot <select id="batch-lot" required></select></label></p>
+<p><label>First store <select id="batch-store-one" required></select></label>
+<label>First store demand (units) <input id="batch-quantity-one" type="number" min="1" max="1000000" step="1" value="30" required></label></p>
+<p><label>Second store <select id="batch-store-two" required></select></label>
+<label>Second store demand (units) <input id="batch-quantity-two" type="number" min="1" max="1000000" step="1" value="25" required></label></p>
+<button id="batch">Run both requests</button>
+</form>
+<small>Demand here means the quantity requested. For a stock shortage demo, request more units in total than are available.
+These are independent concurrent requests: arrival order can affect the split. Total allocation cannot exceed available stock.</small>
+<p id="batch-message" role="status"></p></section>
 <section><h2>Reservations</h2><button id="refresh">Refresh</button>
 <div class="scroll"><table><thead><tr><th>Store</th><th>Lot</th><th>Units</th><th>Collect by</th><th>Status</th><th>Action</th></tr></thead>
 <tbody id="reservations"></tbody></table></div></section>
@@ -46,13 +68,26 @@ async function refresh() {
   $('stock').replaceChildren(); $('reservations').replaceChildren();
   for (const lot of state.lots) {
     const row=document.createElement('tr');
-    [lot.product,lot.quantity,lot.available,date(lot.expires_at)].forEach(text=>cell(row,text));
+    [lot.product,lot.id,lot.quantity,lot.available,date(lot.expires_at)].forEach(text=>cell(row,text));
     $('stock').append(row);
   }
-  if (!$('store').options.length) {
-    for (const [id,store] of Object.entries(state.stores))
-      $('store').add(new Option(`${store.name} (${store.travel_minutes} min, demand ${store.demand})`,id));
-    for (const lot of state.lots) $('lot').add(new Option(lot.product,lot.id));
+  for (const selectId of ['store','batch-store-one','batch-store-two']) {
+    if (!$(selectId).options.length) {
+      for (const [id,store] of Object.entries(state.stores))
+        $(selectId).add(new Option(`${store.name} (${store.travel_minutes} min, demand ${store.demand})`,id));
+      if (selectId === 'batch-store-two') $(selectId).selectedIndex=1;
+    }
+  }
+  for (const selectId of ['lot','batch-lot']) {
+    const selectedLot = $(selectId).value;
+    $(selectId).replaceChildren();
+    for (const lot of state.lots)
+      $(selectId).add(new Option(`${lot.product} (${lot.id}) · ${lot.available} available · expires ${date(lot.expires_at)}`,lot.id));
+    if (state.lots.some(lot=>lot.id === selectedLot)) $(selectId).value=selectedLot;
+    else {
+      const available = state.lots.find(lot=>lot.available > 0 && lot.expires_at * 1000 > Date.now());
+      if (available) $(selectId).value=available.id;
+    }
   }
   for (const reservation of state.reservations) {
     const row=document.createElement('tr');
@@ -67,10 +102,10 @@ async function refresh() {
     $('reservations').append(row);
   }
 }
-async function act(work) {
+async function act(work, messageId='message') {
   document.querySelectorAll('button').forEach(button=>button.disabled=true);
   try { await work(); await refresh(); }
-  catch(error) { $('message').textContent=error.message; }
+  catch(error) { $(messageId).textContent=error.message; }
   finally { document.querySelectorAll('button').forEach(button=>button.disabled=false); }
 }
 async function allocate(requests) {
@@ -82,10 +117,44 @@ async function allocate(requests) {
 $('request').onsubmit=event=>{event.preventDefault();act(()=>allocate([
   {store_id:$('store').value,lot_id:$('lot').value,quantity:Number($('quantity').value)}
 ]));};
-$('batch').onclick=()=>act(()=>allocate([
-  {store_id:'store-a',lot_id:'yogurt-01',quantity:30},
-  {store_id:'store-b',lot_id:'yogurt-01',quantity:25}
-]));
+$('add-stock').onsubmit=event=>{
+  event.preventDefault();
+  act(async()=>{
+    const lot=await api('/api/stock',{
+      product:$('new-product').value,
+      quantity:Number($('new-quantity').value),
+      expires_in_hours:Number($('new-expiry').value)
+    });
+    $('stock-message').textContent=`Added ${lot.quantity} units of ${lot.product}.`;
+    $('new-product').value='';
+  }, 'stock-message');
+};
+function validateStores() {
+  $('batch-store-two').setCustomValidity(
+    $('batch-store-one').value === $('batch-store-two').value ? 'Choose two different stores.' : '');
+}
+$('batch-store-one').onchange=validateStores;
+$('batch-store-two').onchange=validateStores;
+$('batch-request').onsubmit=event=>{
+  event.preventDefault();
+  validateStores();
+  if (!$('batch-request').reportValidity()) return;
+  const requests = [
+    {store_id:$('batch-store-one').value,lot_id:$('batch-lot').value,quantity:Number($('batch-quantity-one').value)},
+    {store_id:$('batch-store-two').value,lot_id:$('batch-lot').value,quantity:Number($('batch-quantity-two').value)}
+  ];
+  const names = ['batch-store-one','batch-store-two'].map(id=>$(id).selectedOptions[0].textContent);
+  act(async()=>{
+    $('batch-message').textContent='Sending both requests…';
+    // Launch both HTTP calls before awaiting either. Preserve each outcome if one fails.
+    const outcomes=await Promise.allSettled(requests.map(request=>api('/api/allocate',{requests:[request]})));
+    $('batch-message').textContent=outcomes.map((outcome,index)=>{
+      if (outcome.status === 'rejected') return `${names[index]}: ${outcome.reason.message}`;
+      const result=outcome.value.results[0];
+      return `${names[index]}: requested ${result.quantity}, allocated ${result.allocated} · ${result.reason}`;
+    }).join('\n');
+  },'batch-message');
+};
 $('refresh').onclick=()=>act(async()=>{});
 act(async()=>{});
 </script>

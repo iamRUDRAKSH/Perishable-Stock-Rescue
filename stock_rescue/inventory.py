@@ -14,6 +14,8 @@ def make_server(host, port, database):
                 return self.send({"service": "stock", "status": "ok"})
             if self.command == "GET" and self.path == "/stock":
                 return self.send(database.snapshot())
+            if self.command == "POST" and self.path == "/stock":
+                return self.send(database.add_stock(self.read_json()), 201)
             if self.command == "POST" and self.path == "/reservations":
                 return self.send(database.reserve(self.read_json()), 201)
             if self.command == "POST" and self.path.startswith("/collect/"):
